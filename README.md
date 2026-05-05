@@ -1,113 +1,243 @@
 # Instruction Clarity Agent
 
-A modular Python agent that processes natural language instructions and either extracts actionable tasks or asks targeted clarification questions. Combines a rule-based pipeline with a Google Gemini LLM fallback for a hybrid AI architecture — no external NLP libraries required for the rule-based layer.
+A production-grade hybrid AI service that processes natural language instructions and returns structured JSON output — extracting actions, deadlines, and priorities, or asking targeted clarification questions when the instruction is ambiguous.
+
+Built with a rule-based primary pipeline and a Google Gemini LLM fallback, wrapped in a clean FastAPI service layer.
+
+---
+
+## Key Features
+
+- Extracts actionable tasks, deadlines, and priority from natural language
+- Asks targeted clarification questions for vague or ambiguous instructions
+- Hybrid architecture: rule-based pipeline first, Gemini LLM as fallback
+- Automatic noise removal (filler words, polite phrases)
+- Uncertainty detection and handling
+- Production-safe LLM integration with retry, schema validation, and fallback
+- FastAPI service with request timing, request ID tracking, and structured logging
+- Smart dev server launcher that auto-detects busy ports
+- Docker-ready
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| API Framework | FastAPI |
+| Server | Uvicorn |
+| LLM Provider | Google Gemini (`gemini-2.0-flash`) |
+| Gemini SDK | `google-genai` |
+| Validation | Pydantic v2 |
+| Config | pydantic-settings |
+| Language | Python 3.11+ |
+| Container | Docker |
 
 ---
 
 ## Project Structure
 
 ```
-agent/
-├── __init__.py       # Exposes run()
-├── agent.py          # Controller — orchestrates the full pipeline
-├── clarity.py        # Clarity analysis and uncertainty detection
-├── extractor.py      # Action, deadline, and priority extraction
-├── clarifier.py      # Clarification question generation
-├── analyzer.py       # Full-instruction clarity analyzer
-├── llm.py            # Google Gemini LLM fallback module
-└── models.py         # Shared Pydantic models
-main.py               # Terminal entry point
-requirements.txt      # Dependencies
+├── agent/                    # Core logic — DO NOT MODIFY
+│   ├── agent.py              # Main controller (hybrid pipeline)
+│   ├── clarity.py            # Clarity analysis + uncertainty detection
+│   ├── extractor.py          # Action, deadline, priority extraction
+│   ├── clarifier.py          # Clarification question generation
+│   ├── analyzer.py           # Full-instruction clarity analyzer
+│   ├── llm.py                # Gemini LLM fallback module
+│   └── models.py             # Shared Pydantic models
+│
+├── api/                      # FastAPI service layer
+│   ├── main.py               # App factory, middleware, exception handlers
+│   ├── routes/
+│   │   ├── process.py        # POST /api/v1/process
+│   │   └── health.py         # GET /health, GET /ready
+│   ├── schemas/
+│   │   ├── request.py        # InstructionRequest model
+│   │   └── response.py       # AgentResponse, ErrorResponse models
+│   └── core/
+│       ├── config.py         # Environment-based settings
+│       └── logging.py        # Structured logging setup
+│
+├── run.py                    # Smart dev server launcher (auto port detection)
+├── main.py                   # Terminal CLI entry point
+├── Dockerfile
+├── .env.example
+├── requirements.txt
+└── README.md
 ```
 
 ---
 
-## How It Works
+## Setup Instructions
 
-### Hybrid Pipeline
+### 1. Clone the repository
 
-```
-Raw input
-   ↓
-1. Noise removal        — strips "hey", "bro", "can you", "please", etc.
-   ↓
-2. Uncertainty removal  — strips "maybe", "if possible", "possibly", etc.
-   ↓
-3. Action extraction    — splits into actions, detects deadline + priority
-   ↓
-4. Action validation    — checks each action for vague pronouns, missing verbs
-   ↓
-5. Decision
-      ├── All actions pronoun-only?  → needs_clarification, actions = []
-      ├── Valid actions exist?       → complete, return all actions
-      └── No actions at all?        → needs_clarification, actions = []
-   ↓
-6. Hybrid check
-      ├── No actions extracted OR too many clarifications (≥2)?
-      │       → call Gemini LLM fallback
-      └── Rule-based result is sufficient?
-              → return rule-based result
+```bash
+git clone <repository-url>
+cd instruction-clarity-agent
 ```
 
-### LLM Fallback Trigger
+### 2. Create a virtual environment
 
-The LLM is called when the rule-based pipeline produces:
-- No extracted actions, OR
-- 2 or more clarification questions (high ambiguity)
+```bash
+python3 -m venv venv
+source venv/bin/activate
+```
+
+### 3. Install dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+### 4. Configure environment variables
+
+```bash
+cp .env.example .env
+```
+
+Open `.env` and set your Gemini API key:
+
+```env
+GEMINI_API_KEY=your_gemini_api_key_here
+DEBUG=false
+PORT=8000
+```
+
+> Get your Gemini API key from [Google AI Studio](https://aistudio.google.com/app/apikey).
 
 ---
 
-## Output Format
+## Running the Server
 
-Every response is a structured JSON object:
+### Development (recommended)
 
+Uses the smart launcher that auto-detects busy ports:
+
+```bash
+python run.py
+```
+
+With auto-reload:
+
+```bash
+python run.py --reload
+```
+
+Custom port:
+
+```bash
+python run.py --port 9000 --reload
+```
+
+### Production
+
+```bash
+uvicorn api.main:app --host 0.0.0.0 --port 8000
+```
+
+### Docker
+
+```bash
+docker build -t clarity-agent .
+docker run -p 8000:8000 -e GEMINI_API_KEY=your_key clarity-agent
+```
+
+---
+
+## API Endpoints
+
+### `POST /api/v1/process`
+
+Process a natural language instruction.
+
+**Request body:**
+```json
+{
+  "instruction": "string"
+}
+```
+
+**Response:**
 ```json
 {
   "status": "complete" | "needs_clarification",
-  "actions": ["list of extracted action strings"],
-  "deadline": "2 days" | "tomorrow" | "next week" | null,
+  "actions": ["list of action strings"],
+  "deadline": "string or null",
   "priority": "high" | "medium" | "low" | null,
-  "clarifications": ["list of targeted questions"]
+  "clarifications": ["list of questions"]
+}
+```
+
+**Error responses:**
+
+| HTTP Code | Code | Reason |
+|---|---|---|
+| `400` | `VALIDATION_ERROR` | Empty or missing instruction |
+| `500` | `INTERNAL_ERROR` | Unexpected server error |
+
+---
+
+### `GET /health`
+
+Basic liveness check. Always returns `200` if the service is running.
+
+**Response:**
+```json
+{
+  "status": "ok",
+  "version": "1.0.0"
 }
 ```
 
 ---
 
-## Example Inputs and Outputs
+### `GET /ready`
+
+Readiness check. Verifies that required environment variables are configured.
+
+**Response:**
+```json
+{
+  "ready": true,
+  "gemini_configured": true
+}
+```
+
+---
+
+## Example Requests and Responses
 
 ### Clear instruction
-```
-Input:  "fix the login bug and notify the team"
 
-Output:
+```bash
+curl -X POST http://localhost:8000/api/v1/process \
+  -H "Content-Type: application/json" \
+  -d '{"instruction": "fix the login bug and notify the team by tomorrow"}'
+```
+
+```json
 {
   "status": "complete",
   "actions": ["fix the login bug", "notify the team"],
-  "deadline": null,
+  "deadline": "tomorrow",
   "priority": "medium",
   "clarifications": []
 }
 ```
 
-### Instruction with deadline
-```
-Input:  "finish the report within 2 days"
-
-Output:
-{
-  "status": "complete",
-  "actions": ["finish the report"],
-  "deadline": "2 days",
-  "priority": "medium",
-  "clarifications": []
-}
-```
+---
 
 ### Instruction with noise
-```
-Input:  "hey bro can you like fix the login issue"
 
-Output:
+```bash
+curl -X POST http://localhost:8000/api/v1/process \
+  -H "Content-Type: application/json" \
+  -d '{"instruction": "hey bro can you like fix the login issue"}'
+```
+
+```json
 {
   "status": "complete",
   "actions": ["fix the login issue"],
@@ -117,25 +247,57 @@ Output:
 }
 ```
 
-### Instruction with uncertainty
-```
-Input:  "maybe fix the login bug"
+---
 
-Output:
+### Instruction with deadline and high priority
+
+```bash
+curl -X POST http://localhost:8000/api/v1/process \
+  -H "Content-Type: application/json" \
+  -d '{"instruction": "deploy the updated service to production asap within 2 days"}'
+```
+
+```json
 {
   "status": "complete",
-  "actions": ["fix the login bug"],
-  "deadline": null,
-  "priority": "medium",
-  "clarifications": ["Do you want to confirm this task?"]
+  "actions": ["deploy the updated service to production asap"],
+  "deadline": "2 days",
+  "priority": "high",
+  "clarifications": []
 }
 ```
 
-### Partially ambiguous — LLM fallback triggered
-```
-Input:  "fix it somehow"
+---
 
-Output (via Gemini):
+### Partially ambiguous instruction
+
+```bash
+curl -X POST http://localhost:8000/api/v1/process \
+  -H "Content-Type: application/json" \
+  -d '{"instruction": "prepare report and send it to the client"}'
+```
+
+```json
+{
+  "status": "complete",
+  "actions": ["prepare report", "send it to the client"],
+  "deadline": null,
+  "priority": "medium",
+  "clarifications": ["What does 'it' refer to?"]
+}
+```
+
+---
+
+### Fully unclear instruction (LLM fallback triggered)
+
+```bash
+curl -X POST http://localhost:8000/api/v1/process \
+  -H "Content-Type: application/json" \
+  -d '{"instruction": "fix it somehow"}'
+```
+
+```json
 {
   "status": "needs_clarification",
   "actions": [],
@@ -148,197 +310,99 @@ Output (via Gemini):
 }
 ```
 
-### Pronoun-only instruction
-```
-Input:  "send it"
-
-Output:
-{
-  "status": "needs_clarification",
-  "actions": [],
-  "deadline": null,
-  "priority": null,
-  "clarifications": ["What does 'it' refer to?"]
-}
-```
-
 ---
 
-## Modules
+### Empty instruction (validation error)
 
-### `agent.py` — Controller
-Orchestrates the full hybrid pipeline. Entry point is `run(instruction: str) -> dict`.
+```bash
+curl -X POST http://localhost:8000/api/v1/process \
+  -H "Content-Type: application/json" \
+  -d '{"instruction": ""}'
+```
 
-Key functions:
-- `_clean_noise(text)` — removes conversational filler phrases and words
-- `_clean_action(action)` — cleans individual extracted actions
-- `_should_use_llm(result)` — decides whether to fall back to LLM
-- `run(instruction)` — main pipeline function
-
-### `clarity.py` — Clarity Analysis
-Assesses instructions and individual actions for clarity.
-
-Key functions:
-- `analyze(text)` — full instruction clarity check
-- `analyze_action(action)` — per-action check, returns targeted clarification questions
-- `_check_uncertainty(text)` — detects uncertainty markers
-- `_remove_uncertainty(text)` — strips uncertainty words from text
-- `all_actions_are_pronoun_based(actions)` — detects pronoun-only instructions
-
-### `extractor.py` — Extraction
-Extracts actions, deadline, and priority from a cleaned instruction.
-
-Key functions:
-- `extract(instruction)` — public interface, returns `{actions, deadline, priority}`
-- `_extract_deadline(text)` — detects relative and fixed deadline expressions
-- `_infer_priority(text)` — infers `high`, `medium`, or `low` from keywords
-- `_split_into_actions(text)` — splits compound instructions into action phrases
-
-### `clarifier.py` — Clarification Generation
-Generates human-like clarification questions from missing fields.
-
-Key functions:
-- `clarify(missing_fields)` — maps field names to targeted questions
-- `generate_clarifications(instruction)` — pattern-based question generation
-
-### `llm.py` — Gemini LLM Fallback
-Calls Google Gemini API with retry logic, schema validation, and safe fallback.
-
-Key functions:
-- `call_llm(instruction)` — public interface, returns validated structured dict
-- `is_valid_schema(data)` — validates all 5 required keys and types
-- `_apply_safe_defaults(data)` — coerces partial responses into valid shape
-- `_parse_response(raw)` — parses JSON, validates schema, applies defaults
-- `_call_once(instruction)` — single Gemini API call
-- `run_tests()` — built-in test runner
-
-### `models.py` — Data Models
-Pydantic models for structured I/O:
-- `ActionExtractionResult` — `{actions, deadline, priority}`
-- `ClarificationResult` — `{instruction, questions}`
-- `AgentResponse` — top-level response wrapper
-
----
-
-## LLM Module Details
-
-### Provider
-Google Gemini via the `google-genai` SDK (`gemini-2.0-flash` model).
-
-### Reliability Features
-| Feature | Detail |
-|---|---|
-| Retry on JSON failure | Up to 2 retries |
-| Schema validation | All 5 keys checked with correct types |
-| Safe defaults | Missing/wrong-typed fields auto-corrected |
-| Priority normalization | Invalid values default to `"medium"` |
-| Empty response guard | Raises `ValueError` if Gemini returns no text |
-| API key validation | Raises `ValueError` at startup if key is missing |
-| Fallback response | Always returned on unrecoverable failure |
-
-### Fallback Response
 ```json
 {
-  "status": "needs_clarification",
-  "actions": [],
-  "deadline": null,
-  "priority": null,
-  "clarifications": ["Could you please rephrase the instruction?"]
+  "error": {
+    "message": "Value error, instruction must not be empty",
+    "code": "VALIDATION_ERROR"
+  }
 }
 ```
 
 ---
 
-## Deadline Detection
+## Swagger UI
 
-| Input | Extracted Deadline |
-|---|---|
-| `within 2 days` | `2 days` |
-| `in 3 hours` | `3 hours` |
-| `in 1 week` | `1 weeks` |
-| `by tomorrow` | `tomorrow` |
-| `next week` | `next week` |
-| `end of day` | `end of day` |
-| `tonight` | `tonight` |
+Interactive API documentation is available at:
 
----
-
-## Priority Detection
-
-| Keywords | Priority |
-|---|---|
-| `urgent`, `asap`, `critical`, `must`, `now` | `high` |
-| `eventually`, `later`, `someday`, `optional` | `low` |
-| (anything else) | `medium` |
-
----
-
-## Noise Words Removed
-
-**Phrases:** `can you`, `could you`, `would you`, `will you`, `please`, `plz`
-
-**Words:** `hey`, `hi`, `hello`, `like`, `just`, `so`, `bro`, `dude`, `man`, `mate`, `also`
-
----
-
-## Installation
-
-```bash
-pip install -r requirements.txt
+```
+http://localhost:8000/docs
 ```
 
-**requirements.txt**
+From Swagger UI you can:
+- Browse all endpoints with descriptions
+- Send test requests directly from the browser
+- Inspect request/response schemas
+- View example payloads
+
+ReDoc (alternative docs):
 ```
-pydantic>=2.0
-google-genai>=1.0
+http://localhost:8000/redoc
 ```
 
 ---
 
-## Environment Setup
+## How the Pipeline Works
 
-```bash
-export GEMINI_API_KEY=your_gemini_api_key_here
 ```
-
-The agent will raise a `ValueError` at startup if `GEMINI_API_KEY` is not set.
+Raw instruction
+      ↓
+1. Noise removal        strips "hey", "bro", "can you", "please", etc.
+      ↓
+2. Uncertainty removal  strips "maybe", "if possible", "possibly", etc.
+      ↓
+3. Action extraction    splits into actions, detects deadline + priority
+      ↓
+4. Action validation    checks each action for vague pronouns, missing verbs
+      ↓
+5. Decision
+      ├── All actions pronoun-only?  → needs_clarification
+      ├── Valid actions exist?       → complete
+      └── No actions at all?        → needs_clarification
+      ↓
+6. Hybrid check
+      ├── No actions OR ≥2 clarifications? → Gemini LLM fallback
+      └── Rule-based result sufficient?    → return rule-based result
+```
 
 ---
 
-## Usage
+## Environment Variables
 
-### Terminal (interactive)
-```bash
-python3 main.py
-```
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `GEMINI_API_KEY` | Yes | — | Google Gemini API key |
+| `DEBUG` | No | `false` | Enable debug logging |
+| `PORT` | No | `8000` | Preferred server port |
 
-### Programmatic
-```python
-from agent.agent import run
+---
 
-result = run("deploy the updated service to production urgently")
-print(result)
-# {
-#   "status": "complete",
-#   "actions": ["deploy the updated service to production urgently"],
-#   "deadline": null,
-#   "priority": "high",
-#   "clarifications": []
-# }
-```
+## Response Headers
 
-### Test LLM module directly
-```bash
-python -m agent.llm
-```
+Every response includes:
+
+| Header | Example | Description |
+|---|---|---|
+| `X-Request-ID` | `a1b2c3d4` | Unique ID for request tracing |
+| `X-Response-Time` | `42.5ms` | Total processing time |
 
 ---
 
 ## Design Principles
 
 - **Hybrid architecture** — rule-based pipeline runs first; LLM is a fallback, not the default
-- **No external NLP libraries** — rule-based layer uses only Python stdlib + regex
-- **Non-destructive validation** — actions are never dropped due to ambiguity; clarifications are generated instead
-- **Partial success** — mixed instructions return valid actions alongside clarification questions
-- **Stateless** — every call to `run()` is fully independent with no shared state
-- **Production-safe LLM** — retry, schema validation, safe defaults, and fallback on every LLM call
+- **Stateless** — every request is fully independent with no shared state
+- **Non-destructive validation** — actions are never dropped due to ambiguity
+- **Production-safe LLM** — retry (×2), schema validation, safe defaults, and fallback on every call
+- **Clean separation** — `agent/` (core logic) and `api/` (service layer) are fully decoupled
+- **No external NLP libraries** — rule-based layer uses only Python stdlib and regex
